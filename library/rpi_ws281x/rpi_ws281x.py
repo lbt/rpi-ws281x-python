@@ -15,7 +15,7 @@ def Color(red, green, blue, white=0):
     Each color component should be a value 0-255 where 0 is the lowest intensity
     and 255 is the highest intensity.
     """
-    return (white << 24) | (red << 16) | (green << 8) | blue
+    return (int(white) << 24) | (int(red) << 16) | (int(green) << 8) | int(blue)
 
 
 class _LED_Data(object):
@@ -47,7 +47,7 @@ class _LED_Data(object):
         if isinstance(pos, slice):
             index = 0
             for n in xrange(*pos.indices(self.size)):
-                ws.ws2811_led_set(self.channel, n, value[index])
+                ws.ws2811_led_set(self.channel, n, int(value[index]))
                 index += 1
         # Else assume the passed in value is a number to the position.
         else:
