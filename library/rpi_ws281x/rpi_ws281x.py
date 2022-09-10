@@ -254,6 +254,10 @@ class PixelStrip(object):
         def show(self):
             self.strip.show()
 
+        def off(self):
+            self.setPixelColor(slice(0, self.num), [0]*self.num)
+            self.strip.show()
+
 # Shim for back-compatibility
 class Adafruit_NeoPixel(PixelStrip):
     pass
