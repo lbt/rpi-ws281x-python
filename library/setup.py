@@ -4,7 +4,7 @@
 #    Phil Howard (phil@pimoroni.com)
 #    Tony DiCola (tony@tonydicola.com)
 
-from setuptools import setup, find_packages, Extension
+from setuptools import setup, Extension
 from setuptools.command.build_py import build_py
 
 class CustomInstallCommand(build_py):
