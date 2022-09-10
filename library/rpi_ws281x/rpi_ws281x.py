@@ -197,7 +197,11 @@ class PixelStrip(object):
         def setPixelColor(self, n, color):
             """Set LED at position n to the provided 24-bit color value (in RGB order).
             """
-            self.strip._led_data[self.first + n] = color
+            if isinstance(n, slice):
+                n = slice(n.start+self.first, n.stop+self.first, n.step)
+            else:
+                n = n+self.first
+            self.strip._led_data[n] = color
 
         def setPixelColorRGB(self, n, red, green, blue, white=0):
             """Set LED at position n to the provided red, green, and blue color.
