@@ -1,6 +1,8 @@
 # Adafruit NeoPixel library port to the rpi_ws281x library.
 # Author: Tony DiCola (tony@tonydicola.com), Jeremy Garff (jer@jers.net)
 import _rpi_ws281x as ws
+import numpy as np
+import sys
 import atexit
 
 
@@ -29,6 +31,7 @@ class RGBW(int):
     def w(self):
         return (self >> 24) & 0xff
 
+_int_to_RGBW = np.frompyfunc(RGBW,1,1) # creates a ufunc that turns an array of integer colors into an array of RGBW objects
 
 def Color(red, green, blue, white=0):
     """Convert the provided red, green, blue color to a 24-bit color value.
@@ -37,8 +40,90 @@ def Color(red, green, blue, white=0):
     """
     return RGBW(red, green, blue, white)
 
+class _PixelStripBase:
+    def __init__(self):
+        raise TypeError("this class is abstract") # is this the correct error type for this?
 
-class PixelStrip:
+    # mutual methods for PixelStrip and PixelSubStrip
+    def __getitem__(self, pos):
+        """Return the 24-bit RGB color value at the provided position or slice
+        of positions.
+        """
+        return self._view[pos]
+
+    def __setitem__(self, pos, value):
+        """Set the 24-bit RGB color value at the provided position or slice of
+        positions. If value is a slice it is zip()'ed with pos to set as many
+        leds as there are values.
+        """
+        self._view[pos]=value
+
+    def __len__(self):
+        return self._view.shape[0]
+
+    def setPixelColor(self, n, color):
+        """Set LED at position n to the provided 24-bit color value (in RGB order).
+        If n is a slice then color can be a value which is repeated for all leds
+        or a slice of values which are applied to the leds.
+        """
+        self._view[n] = color
+
+    def setPixelColorRGB(self, n, red, green, blue, white=0):
+        """Set LED at position n to the provided red, green, and blue color.
+        Each color component should be a value from 0 to 255 (where 0 is the
+        lowest intensity and 255 is the highest intensity).
+        """
+        self.setPixelColor(n, Color(red, green, blue, white))
+
+    def getBrightness(self):
+        return ws.ws2811_channel_t_brightness_get(self.strip._channel)
+
+    def setBrightness(self, brightness):
+        """Scale each LED in the buffer by the provided brightness.  A brightness
+        of 0 is the darkest and 255 is the brightest.
+
+        This method affects all pixels in all PixelSubStrips.
+        """
+        ws.ws2811_channel_t_brightness_set(self.strip._channel, brightness)
+
+    def getPixels(self):
+        """Return an object which allows access to the LED display data as if
+        it were a sequence of 24-bit RGB values.
+        """
+        return self._view
+
+    def getSubPixels(self):
+        return self._colors
+
+    def numPixels(self):
+        """Return the number of pixels in the strip."""
+        return len(self)
+        # alternative: np.product(self._view.shape)
+        # would be identical unless called on a matrix substrip; in that case,
+        # the latter would return the total number of pixels instead of the first dimension
+
+    def getPixelColor(self, n):
+        """Get the 24-bit RGB color value for the LED(s) at index n."""
+        return self._view[n]
+
+    def getPixelColorRGB(self, n):
+        # return single RGBW for int index or array of RGBW for slice/advanced indexing
+        return _int_to_RGBW(self._view[n])
+        # alternative: it might be convenient for users if instead of returning arrays of RGBW for slices,
+        # it returned an RGBW object representing the "color array" - allowing things
+        # like arr.r[1:4] or arr[1:4].r instead of np.vectorize(lambda x:x.r)(arr[1:4])
+
+    def getPixelColorRGBW(self, n):
+        return _int_to_RGBW(self._view[n])
+
+    def show(self):
+        self.strip.show()
+
+    def off(self):
+        self._view[:] = 0
+        self.strip.show()
+
+class PixelStrip(_PixelStripBase):
     def __init__(self, num, pin, freq_hz=800000, dma=10, invert=False,
             brightness=255, channel=0, strip_type=None, gamma=None):
         """Class to represent a SK6812/WS281x LED display.  Num should be the
@@ -68,14 +153,6 @@ class PixelStrip:
         # Create ws2811_t structure and fill in parameters.
         self._leds = ws.new_ws2811_t()
 
-        # Initialize the channels to zero
-        for channum in range(2):
-            chan = ws.ws2811_channel_get(self._leds, channum)
-            ws.ws2811_channel_t_count_set(chan, 0)
-            ws.ws2811_channel_t_gpionum_set(chan, 0)
-            ws.ws2811_channel_t_invert_set(chan, 0)
-            ws.ws2811_channel_t_brightness_set(chan, 0)
-
         # Initialize the channel in use
         self._channel = ws.ws2811_channel_get(self._leds, channel)
 
@@ -92,58 +169,18 @@ class PixelStrip:
 
         self.size = num
 
-        # Create a PixelSubStrip and delegate these methods to it
-        self.main_strip = self.PixelSubStrip(self, 0, num=num)
-        self.setPixelColor = self.main_strip.setPixelColor
-        self.setPixelColorRGB = self.main_strip.setPixelColorRGB
-        self.setBrightness = self.main_strip.setBrightness
-        self.getBrightness = self.main_strip.getBrightness
-        self.getPixels = self.main_strip.getPixels
-        self.getPixelColor = self.main_strip.getPixelColor
-        self.getPixelColorRGB = self.main_strip.getPixelColorRGB
-        self.getPixelColorRGBW = self.main_strip.getPixelColorRGBW
-        self.off = self.main_strip.off
+        # set numpy views to empty arrays; "index out of bounds" seems marginally more
+        # helpful than "variable doesn't exist" when accessing methods before begin()
+        self._view = np.zeros((0))
+        self._colors = np.zeros((0,4))
+        # alternative: set it to a "python-backed" numpy array of the correct size and copy over the content in begin()
+        # this would have the advantage of __len__ being fully backwards compatible even in the edge case of accessing len(strip) before strip.begin()
 
         # Substitute for __del__, traps an exit condition and cleans up properly
         atexit.register(self._cleanup)
 
-    def __getitem__(self, pos):
-        """Return the 24-bit RGB color value at the provided position or slice
-        of positions.
-        """
-        # Handle if a slice of positions are passed in by grabbing all the values
-        # and returning them in a list.
-        if isinstance(pos, slice):
-            return [ws.ws2811_led_get(self._channel, n) for n in range(*pos.indices(self.size))]
-        # Else assume the passed in value is a number to the position.
-        else:
-            return ws.ws2811_led_get(self._channel, pos)
-
-    def __setitem__(self, pos, value):
-        """Set the 24-bit RGB color value at the provided position or slice of
-        positions. If value is a slice it is zip()'ed with pos to set as many
-        leds as there are values.
-        """
-        # Handle if a slice of positions are passed in by setting the appropriate
-        # LED data values to the provided value.
-        # Cast to int() as value may be a numpy non-int value.
-        if isinstance(pos, slice):
-            try:
-                for n, c in zip(range(*pos.indices(self.size)), value):
-                    ws.ws2811_led_set(self._channel, n, int(c))
-            except TypeError:
-                for n in range(*pos.indices(self.size)):
-                    ws.ws2811_led_set(self._channel, n, int(value))
-        # Else assume the passed in value is a number to the position.
-        else:
-            return ws.ws2811_led_set(self._channel, pos, int(value))
-
-    def __len__(self):
-        return ws.ws2811_channel_t_count_get(self._channel)
-
-    def numPixels(self):
-        """Return the number of pixels in the display."""
-        return len(self)
+    #def __len__(self):
+    #    return ws.ws2811_channel_t_count_get(self._channel)
 
     def _cleanup(self):
         # Clean up memory used by the library when not needed anymore.
@@ -161,11 +198,16 @@ class PixelStrip:
         """Initialize library, must be called once before other functions are
         called.
         """
-
         resp = ws.ws2811_init(self._leds)
         if resp != 0:
             str_resp = ws.ws2811_get_return_t_str(resp)
             raise RuntimeError('ws2811_init failed with code {0} ({1})'.format(resp, str_resp))
+        # initialize array view
+        self._view = ws.ws2811_array_get(self._channel)
+        # get view of individual color bytes, respecting architecture dependant byteorder
+        self._colors = self._view.view(dtype=np.uint8).reshape((-1,4))
+        if self._view.dtype.byteorder == "<" or (self._view.dtype.byteorder == "=" and sys.byteorder == "little"):
+            self._colors = self._colors[:,::-1]
 
     def show(self):
         """Update the display with the data from the LED buffer."""
@@ -183,6 +225,7 @@ class PixelStrip:
 
         Note: PixelSubStrips are not prevented from overlappping
         """
+        # TODO: if doing any substrip boundary validation, should probably also check that last>=first (/num >=0) and first >=0
         if last:
             if last > len(self):
                 raise self.InvalidStrip(f"Too many pixels ({last})."
@@ -193,12 +236,14 @@ class PixelStrip:
                 raise self.InvalidStrip(f"Too many pixels ({first + num})."
                                         f"Strip only has {len(self)}.")
             return self.PixelSubStrip(self, first, num=num)
-        raise self.InvalidStrip("Need num or last to create a PixelSubStrip")
+        #raise self.InvalidStrip("Need num or last to create a PixelSubStrip")
+        # allow only settings first as shorthand for "to end of strip"
+        return self.PixelSubStrip(self, first)
 
     class InvalidStrip(Exception):
         pass
 
-    class PixelSubStrip:
+    class PixelSubStrip(_PixelStripBase):
         """A PixelSubStrip handles a subset of the pixels in a PixelStrip
 
         strip = PixelStrip(...)
@@ -208,77 +253,22 @@ class PixelStrip:
         strip2[5] will access the 15th pixel
         """
         def __init__(self, strip, first, last=None, num=None):
+            # TODO: strides, reshape
             self.strip = strip
-            self.first = first
-            if last:
-                self.last = last
-                self.num = last - first
-            elif num:
-                self.last = first + num
-                self.num = num
-            else:
-                raise self.InvalidStrip("Must specify number or last pixel to "
-                                        "create a PixelSubStrip")
+            if first is None:
+                first = 0
+            if last is None:
+                if num is not None:
+                    last = first + num
+                else:
+                    last = len(strip)
+            self._view = strip._values[first:last]
+            self._colors = strip._colors[first:last]
+            # assuming no lasts means "until end of strip", similar to indexing (a[5:])
+            # raise self.InvalidStrip("Must specify number or last pixel to "
+            #                            "create a PixelSubStrip")
 
-        def __len__(self):
-            return self.num
-
-        def setPixelColor(self, n, color):
-            """Set LED at position n to the provided 24-bit color value (in RGB order).
-            If n is a slice then color can be a value which is repeated for all leds
-            or a slice of values which are applied to the leds.
-            """
-            if isinstance(n, slice):
-                n = slice(n.start + self.first, n.stop + self.first, n.step)
-            else:
-                n = self.first + n
-            self.strip[n] = color
-
-        def setPixelColorRGB(self, n, red, green, blue, white=0):
-            """Set LED at position n to the provided red, green, and blue color.
-            Each color component should be a value from 0 to 255 (where 0 is the
-            lowest intensity and 255 is the highest intensity).
-            """
-            # Translation to n done in setPixelColor
-            self.setPixelColor(n, Color(red, green, blue, white))
-
-        def getBrightness(self):
-            return ws.ws2811_channel_t_brightness_get(self.strip._channel)
-
-        def setBrightness(self, brightness):
-            """Scale each LED in the buffer by the provided brightness.  A brightness
-            of 0 is the darkest and 255 is the brightest.
-
-            This method affects all pixels in all PixelSubStrips.
-            """
-            ws.ws2811_channel_t_brightness_set(self.strip._channel, brightness)
-
-        def getPixels(self):
-            """Return an object which allows access to the LED display data as if
-            it were a sequence of 24-bit RGB values.
-            """
-            return self.strip[self.first:self.last]
-
-        def numPixels(self):
-            """Return the number of pixels in the strip."""
-            return self.num
-
-        def getPixelColor(self, n):
-            """Get the 24-bit RGB color value for the LED at position n."""
-            return self.strip[self.first + n]
-
-        def getPixelColorRGB(self, n):
-            return RGBW(self.strip[self.first + n])
-
-        def getPixelColorRGBW(self, n):
-            return RGBW(self.strip[self.first + n])
-
-        def show(self):
-            self.strip.show()
-
-        def off(self):
-            self.strip[self.first:self.last] = 0
-            self.strip.show()
+        # all other methods are inherited from _PixelStripBase
 
 # Shim for back-compatibility
 class Adafruit_NeoPixel(PixelStrip):
